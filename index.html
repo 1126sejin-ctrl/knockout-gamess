@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KNOCKOUT! - 하늘섬 배틀</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#1a1a2e;overflow:hidden;font-family:sans-serif;}
+#gc{display:block;width:100vw;height:100vh;}
+#hud{position:fixed;top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:flex-start;padding:12px;pointer-events:none;}
+.hud-box{background:rgba(0,0,0,0.6);border-radius:10px;padding:8px 14px;color:#fff;font-size:14px;}
+#dmgPct{font-size:30px;font-weight:bold;color:#fff;text-align:center;line-height:1;}
+#dmgLabel{font-size:11px;color:rgba(255,255,255,0.6);text-align:center;}
+#scoreNum{font-size:24px;font-weight:bold;color:#facc15;}
+#koNum{font-size:24px;font-weight:bold;color:#f472b6;}
+#aliveNum{font-size:13px;color:#4ade80;margin-top:2px;}
+#ctrl{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);color:rgba(255,255,255,0.5);font-size:12px;pointer-events:none;white-space:nowrap;}
+#overlay{position:fixed;inset:0;background:rgba(10,10,30,0.92);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;}
+#overlay h1{font-size:48px;font-weight:bold;margin-bottom:8px;letter-spacing:2px;}
+#overlay p{font-size:14px;color:rgba(255,255,255,0.5);margin-bottom:28px;}
+#startBtn{background:#6c63ff;border:none;color:#fff;padding:15px 50px;border-radius:10px;font-size:18px;cursor:pointer;}
+#startBtn:hover{background:#5a52e0;}
+#msgBox{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,0.85);color:#fff;padding:20px 36px;border-radius:12px;font-size:20px;display:none;text-align:center;z-index:100;}
+</style>
+</head>
+<body>
+<canvas id="gc"></canvas>
+<div id="hud">
+  <div class="hud-box">
+    <div id="dmgPct">0%</div>
+    <div id="dmgLabel">데미지</div>
+  </div>
+  <div class="hud-box" style="text-align:center;min-width:90px;">
+    <div style="font-size:11px;color:rgba(255,255,255,0.6);">점수</div>
+    <div id="scoreNum">0</div>
+    <div id="aliveNum">생존 4명</div>
+  </div>
+  <div class="hud-box" style="text-align:right;">
+    <div style="font-size:11px;color:rgba(255,255,255,0.6);">KO</div>
+    <div id="koNum">0</div>
+  </div>
+</div>
+<div id="ctrl">WASD 이동 &nbsp;|&nbsp; Space 점프 &nbsp;|&nbsp; F / 클릭 공격 &nbsp;|&nbsp; Shift 대시</div>
+<div id="msgBox"></div>
+<div id="overlay">
+  <div style="font-size:64px;margin-bottom:14px;">🏝️</div>
+  <h1>KNOCKOUT!</h1>
+  <p>하늘섬 배틀 · 로블록스 스타일 · AI봇 3마리</p>
+  <button id="startBtn" onclick="startGame()">게임 시작</button>
+  <div style="margin-top:20px;font-size:12px;color:rgba(255,255,255,0.3);">게임창 클릭 후 마우스로 카메라 회전 가능</div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const canvas=document.getElementById('gc');
+const overlay=document.getElementById('overlay');
+let scene,camera,renderer;
+let player,bots=[],islandMeshes=[],cloudMeshes=[];
+let pVel={x:0,y:0,z:0},onGround=false;
+let keys={},score=0,ko=0,dmg=0,lives=3;
+let atkCool=0,dashCool=0,frame=0,gameOn=false;
+let camYaw=0,camPitch=0,isPointerLocked=false;
+let t=0;
+
+const ISLANDS=[
+  {x:0,y:0,z:0,w:18,d:18,color:0x5b8a3c},
+  {x:16,y:1.5,z:0,w:8,d:8,color:0x4a7a6a},
+  {x:-16,y:1.5,z:0,w:8,d:8,color:0x4a7a6a},
+  {x:0,y:1.5,z:16,w:8,d:8,color:0x4a7a6a},
+  {x:0,y:1.5,z:-16,w:8,d:8,color:0x4a7a6a},
+  {x:11,y:3,z:11,w:5,d:5,color:0x8b5e3c},
+  {x:-11,y:3,z:11,w:5,d:5,color:0x8b5e3c},
+  {x:11,y:3,z:-11,w:5,d:5,color:0x8b5e3c},
+  {x:-11,y:3,z:-11,w:5,d:5,color:0x8b5e3c},
+  {x:0,y:5.5,z:0,w:5,d:5,color:0xd4a843},
+];
+
+const BOT_COLORS=[0xe74c3c,0xe67e22,0x9b59b6];
+const BOT_NAMES=['레드봇','오렌지봇','퍼플봇'];
+
+function makeChar(color){
+  const g=new THREE.Group();
+  const bm=new THREE.MeshLambertMaterial({color});
+  const sm=new THREE.MeshLambertMaterial({color:0xffcc99});
+  const lm=new THREE.MeshLambertMaterial({color:0x2c3e50});
+  const body=new THREE.Mesh(new THREE.BoxGeometry(0.8,1.0,0.5),bm);
+  body.position.y=0.5;body.castShadow=true;g.add(body);
+  const head=new THREE.Mesh(new THREE.BoxGeometry(0.75,0.75,0.75),sm);
+  head.position.y=1.35;head.castShadow=true;g.add(head);
+  const e1=new THREE.Mesh(new THREE.BoxGeometry(0.15,0.12,0.05),new THREE.MeshLambertMaterial({color:0x111}));
+  e1.position.set(0.18,1.42,0.38);g.add(e1);
+  const e2=e1.clone();e2.position.x=-0.18;g.add(e2);
+  const mouth=new THREE.Mesh(new THREE.BoxGeometry(0.3,0.07,0.05),new THREE.MeshLambertMaterial({color:0x111}));
+  mouth.position.set(0,1.2,0.38);g.add(mouth);
+  const a1=new THREE.Mesh(new THREE.BoxGeometry(0.3,0.85,0.3),bm);
+  a1.position.set(0.58,0.45,0);a1.castShadow=true;g.add(a1);
+  const a2=a1.clone();a2.position.x=-0.58;g.add(a2);
+  const l1=new THREE.Mesh(new THREE.BoxGeometry(0.32,0.75,0.32),lm);
+  l1.position.set(0.22,-0.38,0);l1.castShadow=true;g.add(l1);
+  const l2=l1.clone();l2.position.x=-0.22;g.add(l2);
+  return g;
+}
+
+function startGame(){
+  overlay.style.display='none';
+  init();
+}
+
+function init(){
+  gameOn=true;
+  scene=new THREE.Scene();
+  scene.background=new THREE.Color(0x87ceeb);
+  scene.fog=new THREE.Fog(0x87ceeb,50,120);
+  camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.1,300);
+  renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+  renderer.setSize(innerWidth,innerHeight);
+  renderer.shadowMap.enabled=true;
+
+  scene.add(new THREE.AmbientLight(0xffffff,0.6));
+  const sun=new THREE.DirectionalLight(0xfff5e0,1.2);
+  sun.position.set(20,40,15);sun.castShadow=true;
+  sun.shadow.mapSize.width=2048;sun.shadow.mapSize.height=2048;
+  scene.add(sun);
+
+  makeWorld();
+  player=makeChar(0x3498db);
+  player.position.set(0,2,0);
+  scene.add(player);
+
+  BOT_COLORS.forEach((c,i)=>{
+    const b=makeChar(c);
+    const sp=[{x:6,z:6},{x:-6,z:6},{x:0,z:-6}];
+    b.position.set(sp[i].x,2,sp[i].z);
+    b.userData={vel:{x:0,y:0,z:0},onGround:false,alive:true,timer:i*30,dmgPct:0,name:BOT_NAMES[i]};
+    scene.add(b);bots.push(b);
+  });
+
+  document.addEventListener('keydown',e=>{keys[e.code]=true;if(e.code==='Space')e.preventDefault();});
+  document.addEventListener('keyup',e=>keys[e.code]=false);
+  canvas.addEventListener('click',()=>{canvas.requestPointerLock();doAttack();});
+  document.addEventListener('pointerlockchange',()=>{isPointerLocked=document.pointerLockElement===canvas;});
+  document.addEventListener('mousemove',e=>{
+    if(!isPointerLocked)return;
+    camYaw-=e.movementX*0.003;
+    camPitch=Math.max(-0.5,Math.min(0.5,camPitch-e.movementY*0.003));
+  });
+  window.addEventListener('resize',()=>{
+    camera.aspect=innerWidth/innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth,innerHeight);
+  });
+  loop();
+}
+
+function makeWorld(){
+  ISLANDS.forEach(c=>{
+    const top=new THREE.Mesh(new THREE.BoxGeometry(c.w,0.6,c.d),new THREE.MeshLambertMaterial({color:c.color}));
+    top.position.set(c.x,c.y,c.z);top.receiveShadow=true;top.castShadow=true;scene.add(top);
+    const grass=new THREE.Mesh(new THREE.BoxGeometry(c.w+0.1,0.15,c.d+0.1),new THREE.MeshLambertMaterial({color:0x7ec850}));
+    grass.position.set(c.x,c.y+0.35,c.z);scene.add(grass);
+    const dirt=new THREE.Mesh(new THREE.BoxGeometry(c.w*0.9,1,c.d*0.9),new THREE.MeshLambertMaterial({color:0x8b6914}));
+    dirt.position.set(c.x,c.y-0.8,c.z);scene.add(dirt);
+    islandMeshes.push({x:c.x,y:c.y,z:c.z,w:c.w,d:c.d});
+    if(c.w>=8){
+      for(let i=0;i<(c.w>=18?5:2);i++){
+        const tx=c.x+(Math.random()-0.5)*(c.w-2);
+        const tz=c.z+(Math.random()-0.5)*(c.d-2);
+        const trunk=new THREE.Mesh(new THREE.BoxGeometry(0.28,1.4,0.28),new THREE.MeshLambertMaterial({color:0x6b3a2a}));
+        trunk.position.set(tx,c.y+0.7,tz);trunk.castShadow=true;scene.add(trunk);
+        const leaves=new THREE.Mesh(new THREE.BoxGeometry(1.3,1.3,1.3),new THREE.MeshLambertMaterial({color:0x2e8b34}));
+        leaves.position.set(tx,c.y+2,tz);leaves.castShadow=true;scene.add(leaves);
+      }
+    }
+  });
+  for(let i=0;i<10;i++){
+    const g=new THREE.Group();
+    for(let j=0;j<3;j++){
+      const m=new THREE.Mesh(new THREE.BoxGeometry(2+Math.random()*3,1+Math.random(),2+Math.random()*2),new THREE.MeshLambertMaterial({color:0xffffff}));
+      m.position.set(j*2-2,Math.random()*0.5,0);g.add(m);
+    }
+    g.position.set((Math.random()-0.5)*100,12+Math.random()*20,(Math.random()-0.5)*100);
+    scene.add(g);cloudMeshes.push(g);
+  }
+}
+
+function isOnIsland(pos){
+  for(const isl of islandMeshes){
+    const hw=isl.w/2,hd=isl.d/2;
+    if(pos.x>=isl.x-hw&&pos.x<=isl.x+hw&&pos.z>=isl.z-hd&&pos.z<=isl.z+hd&&pos.y>=isl.y-0.2&&pos.y<=isl.y+1){
+      return isl.y+0.5;
+    }
+  }return null;
+}
+
+function showMsg(txt,dur=1500){
+  const m=document.getElementById('msgBox');
+  m.textContent=txt;m.style.display='block';
+  clearTimeout(m._t);m._t=setTimeout(()=>m.style.display='none',dur);
+}
+
+function doAttack(){
+  if(!gameOn||atkCool>0)return;
+  atkCool=30;
+  bots.forEach(bot=>{
+    if(!bot.userData.alive)return;
+    const dx=bot.position.x-player.position.x;
+    const dz=bot.position.z-player.position.z;
+    const dist=Math.sqrt(dx*dx+dz*dz);
+    if(dist<2.8){
+      const d=20+Math.floor(Math.random()*15);
+      bot.userData.dmgPct+=d;
+      const k=0.18+bot.userData.dmgPct*0.003;
+      bot.userData.vel.x+=(dx/dist)*k;
+      bot.userData.vel.z+=(dz/dist)*k;
+      bot.userData.vel.y+=0.18+bot.userData.dmgPct*0.002;
+      score+=10;updateHUD();
+      if(bot.userData.dmgPct>=150)killBot(bot);
+    }
+  });
+}
+
+function killBot(bot){
+  bot.userData.alive=false;bot.visible=false;
+  ko++;score+=200;updateHUD();
+  showMsg('KO! +200점 🎉');
+  setTimeout(()=>{
+    if(!gameOn)return;
+    bot.userData.dmgPct=0;bot.userData.alive=true;bot.visible=true;
+    bot.userData.vel={x:0,y:0,z:0};
+    const isl=ISLANDS[Math.floor(Math.random()*5)];
+    bot.position.set(isl.x+(Math.random()-0.5)*4,isl.y+2,isl.z+(Math.random()-0.5)*4);
+    updateHUD();
+  },3000);
+}
+
+function updateHUD(){
+  document.getElementById('dmgPct').textContent=Math.round(dmg)+'%';
+  document.getElementById('scoreNum').textContent=score;
+  document.getElementById('koNum').textContent=ko;
+  const alive=bots.filter(b=>b.userData.alive).length+1;
+  document.getElementById('aliveNum').textContent='생존 '+alive+'명';
+}
+
+function loop(){
+  if(!gameOn)return;
+  requestAnimationFrame(loop);
+  t+=0.01;frame++;
+  if(atkCool>0)atkCool--;
+  if(dashCool>0)dashCool--;
+
+  cloudMeshes.forEach((c,i)=>c.position.x+=0.015*(i%2===0?1:-1));
+
+  const fwd=new THREE.Vector3(Math.sin(camYaw),0,Math.cos(camYaw));
+  const right=new THREE.Vector3(Math.cos(camYaw),0,-Math.sin(camYaw));
+  const spd=0.1;
+  if(keys['KeyW']||keys['ArrowUp']){pVel.x+=fwd.x*spd;pVel.z+=fwd.z*spd;}
+  if(keys['KeyS']||keys['ArrowDown']){pVel.x-=fwd.x*spd;pVel.z-=fwd.z*spd;}
+  if(keys['KeyA']||keys['ArrowLeft']){pVel.x-=right.x*spd;pVel.z-=right.z*spd;}
+  if(keys['KeyD']||keys['ArrowRight']){pVel.x+=right.x*spd;pVel.z+=right.z*spd;}
+  if(keys['Space']&&onGround){pVel.y=0.24;onGround=false;}
+  if((keys['ShiftLeft']||keys['ShiftRight'])&&dashCool===0){
+    pVel.x+=fwd.x*0.6;pVel.z+=fwd.z*0.6;dashCool=60;showMsg('대시!',500);
+  }
+  if(keys['KeyF'])doAttack();
+
+  pVel.x*=0.78;pVel.z*=0.78;pVel.y-=0.013;
+  player.position.x+=pVel.x;player.position.y+=pVel.y;player.position.z+=pVel.z;
+
+  const pg=isOnIsland(player.position);
+  if(pg!==null&&pVel.y<=0){player.position.y=pg;pVel.y=0;onGround=true;}
+  else onGround=false;
+
+  if(player.position.y<-15){
+    dmg+=25;lives--;
+    if(lives<=0){
+      gameOn=false;
+      document.getElementById('msgBox').style.display='block';
+      document.getElementById('msgBox').innerHTML='탈락! 최종 점수: <b>'+score+'</b><br><small style="font-size:14px;opacity:0.7">F5로 재시작</small>';
+      return;
+    }
+    showMsg('추락! 남은 목숨: '+lives+'개');
+    player.position.set(0,3,0);pVel={x:0,y:0,z:0};updateHUD();
+  }
+
+  if(Math.abs(pVel.x)>0.01||Math.abs(pVel.z)>0.01)player.rotation.y=Math.atan2(pVel.x,pVel.z);
+  const la=Math.sin(t*8)*0.3;
+  if(player.children[7])player.children[7].rotation.x=la;
+  if(player.children[8])player.children[8].rotation.x=-la;
+  if(player.children[5])player.children[5].rotation.z=Math.sin(t*8)*0.25+0.15;
+  if(player.children[6])player.children[6].rotation.z=-Math.sin(t*8)*0.25-0.15;
+
+  bots.forEach(bot=>{
+    if(!bot.userData.alive)return;
+    const u=bot.userData;
+    u.timer++;
+    const dx=player.position.x-bot.position.x;
+    const dz=player.position.z-bot.position.z;
+    const dist=Math.sqrt(dx*dx+dz*dz);
+    if(u.timer%80===0){
+      const ang=Math.atan2(dx,dz)+(Math.random()-0.5)*1.5;
+      u.vel.x=Math.sin(ang)*0.07;u.vel.z=Math.cos(ang)*0.07;
+    }
+    if(dist<14&&dist>1.5){u.vel.x+=(dx/dist)*0.005;u.vel.z+=(dz/dist)*0.005;}
+    if(dist<1.8&&frame%80===0){dmg+=12;updateHUD();showMsg('맞았다! -12%',600);}
+    u.vel.y-=0.013;
+    bot.position.x+=u.vel.x;bot.position.y+=u.vel.y;bot.position.z+=u.vel.z;
+    u.vel.x*=0.82;u.vel.z*=0.82;
+    const bg=isOnIsland(bot.position);
+    if(bg!==null&&u.vel.y<=0){bot.position.y=bg;u.vel.y=0;}
+    if(bot.position.y<-15){u.dmgPct+=50;const isl=ISLANDS[Math.floor(Math.random()*5)];bot.position.set(isl.x+(Math.random()-0.5)*4,isl.y+3,isl.z+(Math.random()-0.5)*4);u.vel={x:0,y:0,z:0};if(u.dmgPct>=150)killBot(bot);}
+    bot.rotation.y=Math.atan2(dx,dz);
+  });
+
+  const tx=player.position.x-Math.sin(camYaw)*11;
+  const ty=player.position.y+5+Math.sin(camPitch)*7;
+  const tz=player.position.z-Math.cos(camYaw)*11;
+  camera.position.x+=(tx-camera.position.x)*0.1;
+  camera.position.y+=(ty-camera.position.y)*0.1;
+  camera.position.z+=(tz-camera.position.z)*0.1;
+  camera.lookAt(player.position.x,player.position.y+0.8,player.position.z);
+  renderer.render(scene,camera);
+}
+</script>
+</body>
+</html>
